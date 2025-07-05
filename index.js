@@ -1,153 +1,66 @@
-const { exec } = require("child_process");
-const chalk = require("chalk");
-const check = require("get-latest-version");
+// index.js
+
+const login = require("fca-unofficial");
 const fs = require("fs");
-const semver = require("semver");
-global.loading = require("./utils/log.js");
+const { BotPack } = require("botpack");
 
-let configJson;
-let packageJson;
-const sign = "(›^-^)›";
-const fbstate = "appstate.json";
+// --- User Welcome System ---
+const userDBPath = './users.json';
+let userDB = {};
 
 try {
-  configJson = require("./config.json");
-} catch (error) {
-  console.error("Error loading config.json:", error);
-  process.exit(1); // Exit the script with an error code
+    if (fs.existsSync(userDBPath)) {
+        userDB = JSON.parse(fs.readFileSync(userDBPath));
+    } else {
+        fs.writeFileSync(userDBPath, JSON.stringify({}));
+    }
+} catch (e) {
+    fs.writeFileSync(userDBPath, JSON.stringify({}));
 }
 
-const delayedLog = async (message) => {
-  const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
-  for (const char of message) {
-    process.stdout.write(char);
-    await delay(50);
-  }
-
-  console.log();
+const markUserAsWelcomed = (userID) => {
+    userDB[userID] = true;
+    fs.writeFileSync(userDBPath, JSON.stringify(userDB, null, 2));
 };
 
-const showMessage = async () => {
-  const message =
-    chalk.yellow(" ") +
-    `The "removeSt" property is set true in the config.json. Therefore, the Appstate was cleared effortlessly! You can now place a new one in the same directory.`;
+const welcomeMessage = `👋 Hello! Welcome to Xplicit Shop.
 
-  await delayedLog(message);
-};
+🛒 You can:
+1️⃣ View Products
+2️⃣ Check Prices
+3️⃣ Place an Order
+4️⃣ Contact Admin
 
-if (configJson.removeSt) {
-  fs.writeFileSync(fbstate, sign, { encoding: "utf8", flag: "w" });
-  showMessage();
-  configJson.removeSt = false;
-  fs.writeFileSync(
-    "./config.json",
-    JSON.stringify(configJson, null, 2),
-    "utf8",
-  );
-  setTimeout(() => {
-    process.exit(0);
-  }, 10000);
-  return;
-}
+Please type the number of your choice or type 'menu' anytime to see this list again.`;
+// --- End User Welcome System ---
 
-// # Please note that sometimes this function is the reason the bot will auto-restart, even if your custom.js auto-restart is set to false. This is because the port switches automatically if it is unable to connect to the current port. ↓↓↓↓↓↓
+login({ appState: JSON.parse(fs.readFileSync('appstate.json', 'utf8')) }, (err, api) => {
+    if (err) return console.error("Login Error:", err);
 
-const excluded = configJson.UPDATE.EXCLUDED || [];
+    console.log(`✅ Bot [${api.getCurrentUserID()}] is now online!`);
 
-try {
-  packageJson = require("./package.json");
-} catch (error) {
-  console.error("Error loading package.json:", error);
-  return;
-}
+    const bot = new BotPack({
+        api: api,
+        prefix: "",
+        commandNotFoundMessage: "❓ Sorry, I didn’t understand that.\nPlease type ‘menu’ to see the options.",
+    });
 
-function nv(version) {
-  return version.replace(/^\^/, "");
-}
+    bot.loadCommands("./commands");
+    console.log("✅ Commands loaded successfully.");
 
-async function updatePackage(dependency, currentVersion, latestVersion) {
-  if (!excluded.includes(dependency)) {
-    const ncv = nv(currentVersion);
-
-    if (semver.neq(ncv, latestVersion)) {
-      console.log(
-        chalk.bgYellow.bold(` UPDATE `),
-        `There is a newer version ${chalk.yellow(`(^${latestVersion})`)} available for ${chalk.yellow(dependency)}. Updating to the latest version...`,
-      );
-
-      packageJson.dependencies[dependency] = `^${latestVersion}`;
-
-      fs.writeFileSync("./package.json", JSON.stringify(packageJson, null, 2));
-
-      console.log(
-        chalk.green.bold(`UPDATED`),
-        `${chalk.yellow(dependency)} updated to ${chalk.yellow(`^${latestVersion}`)}`,
-      );
-
-      exec(`npm install ${dependency}@latest`, (error, stdout, stderr) => {
-        if (error) {
-          console.error("Error executing npm install command:", error);
-          return;
+    api.listenMqtt((err, event) => {
+        if (err) return console.error("ListenMqtt Error:", err);
+        if (event.type !== "message" || event.isGroup || event.senderID === api.getCurrentUserID()) {
+            return;
         }
-        console.log("npm install output:", stdout);
-      });
-    }
-  }
-}
 
-async function checkAndUpdate() {
-  if (configJson.UPDATE && configJson.UPDATE.Package) {
-    try {
-      for (const [dependency, currentVersion] of Object.entries(
-        packageJson.dependencies,
-      )) {
-        const latestVersion = await check(dependency);
-        await updatePackage(dependency, currentVersion, latestVersion);
-      }
-    } catch (error) {
-      console.error("Error checking and updating dependencies:", error);
-    }
-  } else {
-    console.log(
-      chalk.yellow(""),
-      "Update for packages is not enabled in config.json",
-    );
-  }
-}
+        if (!userDB[event.senderID]) {
+            api.sendMessage(welcomeMessage, event.threadID, (err) => {
+                if (!err) markUserAsWelcomed(event.senderID);
+            });
+            return;
+        }
 
-// Do not remove anything if you don't know what you're doing! -Yan
-
-setTimeout(() => {
-  checkAndUpdate();
-}, 20000);
-
-const path = require("path");
-const express = require("express");
-const parser = require("body-parser");
-const app = express();
-
-app.use(parser.json());
-
-// Serve all static files from the whole project
-app.use(express.static(path.join(__dirname, "includes/cover")));
-
-// Route to serve config.json
-app.get("/themes", (req, res) => {
-  res.sendFile(path.join(__dirname, "includes/cover/html.json"));
+        bot.handleEvent(event);
+    });
 });
-
-// Serve index.html from includes/cover
-app.get("/", function (req, res) {
-  res.sendFile(path.join(__dirname, "includes/cover/index.html"));
-});
-
-app.listen(2024, () => {
-  global.loading.log(
-    `Bot is running on port: 2024`,
-    "SYSTEM",
-  );
-});
-
-// __@YanMaglinte was Here__ //
-// ----------------------------//
